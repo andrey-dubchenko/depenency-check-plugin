@@ -159,7 +159,6 @@ public class DependencyGraphAnalyzer {
                 return info;
             }
         } catch (Exception e) {
-            // ignore
         }
 
         return null;

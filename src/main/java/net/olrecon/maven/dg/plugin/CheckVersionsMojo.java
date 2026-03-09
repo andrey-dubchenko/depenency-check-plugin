@@ -1,11 +1,14 @@
 package net.olrecon.maven.dg.plugin;
 
-import net.olrecon.maven.dg.plugin.model.*;
-import net.olrecon.maven.dg.plugin.service.*;
-import net.olrecon.maven.dg.plugin.util.JsonUtils;
-import net.olrecon.maven.dg.plugin.util.VersionComparator;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import net.olrecon.maven.dg.plugin.model.DependencySource;
+import net.olrecon.maven.dg.plugin.model.MavenDependencyTree;
+import net.olrecon.maven.dg.plugin.model.ParentVersionIssue;
+import net.olrecon.maven.dg.plugin.service.DependencyGraphAnalyzer;
+import net.olrecon.maven.dg.plugin.service.ParentChainBuilder;
+import net.olrecon.maven.dg.plugin.util.JsonUtils;
+import net.olrecon.maven.dg.plugin.util.VersionComparator;
 import org.apache.maven.artifact.Artifact;
 import org.apache.maven.artifact.factory.ArtifactFactory;
 import org.apache.maven.artifact.repository.ArtifactRepository;
@@ -25,9 +28,13 @@ import java.io.File;
 import java.io.FileWriter;
 import java.io.Writer;
 import java.nio.file.Files;
-import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @Mojo(
@@ -37,10 +44,10 @@ import java.util.stream.Collectors;
         threadSafe = true
 )
 public class CheckVersionsMojo extends AbstractMojo {
-    @Parameter( defaultValue = "${project}", readonly = true )
+    @Parameter(defaultValue = "${project}", readonly = true)
     private MavenProject project;
 
-    @Parameter( defaultValue = "${session}", readonly = true )
+    @Parameter(defaultValue = "${session}", readonly = true)
     private MavenSession session;
 
     @Component
@@ -93,7 +100,6 @@ public class CheckVersionsMojo extends AbstractMojo {
         getLog().info("Temp directory: " + rootTempDir);
 
         try {
-            // Анализируем модуль
             analyzeModule();
 
         } catch (Exception e) {
@@ -119,20 +125,17 @@ public class CheckVersionsMojo extends AbstractMojo {
                 targetGroupId
         );
 
-        // Определяем корневую директорию проекта
         MavenProject topProject = session.getTopLevelProject();
         String rootDir = topProject != null ?
                 topProject.getBasedir().getAbsolutePath() :
                 project.getBasedir().getAbsolutePath();
 
-        // Временная директория всегда в корне проекта
         rootTempDir = rootDir + "/" + tempDir;
     }
 
     private void analyzeModule() throws Exception {
         String moduleName = project.getArtifactId();
 
-        // Строим дерево зависимостей
         DependencyGraphAnalyzer analyzer = new DependencyGraphAnalyzer(
                 project,
                 session,
@@ -143,14 +146,11 @@ public class CheckVersionsMojo extends AbstractMojo {
 
         MavenDependencyTree moduleTree = analyzer.buildDependencyTree(moduleName);
 
-        // Получаем все зависимости
         Set<Artifact> artifacts = project.getArtifacts();
         List<ParentVersionIssue> moduleIssues = analyzeArtifacts(artifacts, moduleName, analyzer);
 
-        // Сохраняем результаты
         saveModuleResults(moduleName, moduleIssues, moduleTree);
 
-        // Отчет в лог
         reportModuleIssues(moduleName, moduleIssues);
     }
 
@@ -232,10 +232,9 @@ public class CheckVersionsMojo extends AbstractMojo {
     private void saveModuleResults(String moduleName,
                                    List<ParentVersionIssue> issues,
                                    MavenDependencyTree moduleTree) throws Exception {
-        // Создаем временную директорию в корне проекта
+
         Files.createDirectories(Paths.get(rootTempDir));
 
-        // Сохраняем дерево для агрегации в корневой temp
         if (moduleTree != null) {
             File treeFile = new File(rootTempDir, moduleName + "-tree.json");
             try (Writer writer = new FileWriter(treeFile)) {
@@ -244,7 +243,6 @@ public class CheckVersionsMojo extends AbstractMojo {
             getLog().debug("Tree saved for aggregation: " + treeFile.getAbsolutePath());
         }
 
-        // Сохраняем ошибки для агрегации
         List<ParentVersionIssue> errors = issues.stream()
                 .filter(ParentVersionIssue::isError)
                 .collect(Collectors.toList());

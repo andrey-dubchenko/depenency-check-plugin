@@ -13,13 +13,15 @@ import org.apache.maven.plugins.annotations.Mojo;
 import org.apache.maven.plugins.annotations.Parameter;
 import org.apache.maven.project.MavenProject;
 
-import java.io.File;
 import java.io.FileWriter;
 import java.io.Writer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.*;
+import java.util.Date;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 @Mojo(
@@ -64,7 +66,6 @@ public class AggregateResultsMojo extends AbstractMojo {
     public void execute() throws MojoExecutionException, MojoFailureException {
         jsonUtils = new JsonUtils(gson);
 
-        // Проверяем, что это корневой проект
         if (!project.isExecutionRoot()) {
             getLog().info("Not a root project, skipping aggregation");
             return;
@@ -86,7 +87,6 @@ public class AggregateResultsMojo extends AbstractMojo {
 
             reportResults(data);
 
-            // Проверка на ошибки
             if (failOnError && data.totalErrors > 0) {
                 throw new MojoFailureException(
                         "Found " + data.totalErrors + " dependencies with low parent version! " +

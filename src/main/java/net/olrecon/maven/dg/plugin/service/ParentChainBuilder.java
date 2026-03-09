@@ -13,7 +13,10 @@ import org.apache.maven.model.io.xpp3.MavenXpp3Reader;
 
 import java.io.File;
 import java.io.FileReader;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 
 public class ParentChainBuilder {
 
@@ -51,7 +54,7 @@ public class ParentChainBuilder {
 
         public void addParent(String groupId, String artifactId, String version) {
             parents.add(new ParentInfo(groupId, artifactId, version));
-            // Используем targetGroupId внешнего класса
+
             if (groupId.equals(targetGroupId)) {
                 this.hasTargetGroup = true;
                 this.targetParentVersion = version;

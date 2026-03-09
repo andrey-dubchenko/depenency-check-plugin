@@ -128,7 +128,6 @@ public class ParentVersionIssue {
         this.fullPath = fullPath;
     }
 
-    // Вспомогательные методы
     public void addToChain(String groupId, String artifactId, String version) {
         this.parentChain.add(new ParentInfo(groupId, artifactId, version));
     }

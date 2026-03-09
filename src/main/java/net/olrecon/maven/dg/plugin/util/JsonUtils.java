@@ -22,7 +22,8 @@ public class JsonUtils {
     public MavenDependencyTree readTreeFromFile(File file) throws Exception {
         try (FileReader reader = new FileReader(file)) {
 
-            Type type = new TypeToken<MavenDependencyTree>() {}.getType();
+            Type type = new TypeToken<MavenDependencyTree>() {
+            }.getType();
 
             return gson.fromJson(reader, type);
         }
@@ -30,7 +31,8 @@ public class JsonUtils {
 
     public List<ParentVersionIssue> readErrorsFromFile(File file) throws Exception {
         try (FileReader reader = new FileReader(file)) {
-            Type type = new TypeToken<Map<String, Object>>() {}.getType();
+            Type type = new TypeToken<Map<String, Object>>() {
+            }.getType();
 
             Map<String, Object> data = gson.fromJson(reader, type);
 

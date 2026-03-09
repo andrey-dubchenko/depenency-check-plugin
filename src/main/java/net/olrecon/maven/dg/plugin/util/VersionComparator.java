@@ -1,7 +1,8 @@
 package net.olrecon.maven.dg.plugin.util;
 
 public final class VersionComparator {
-    private VersionComparator() {}
+    private VersionComparator() {
+    }
 
     public static boolean isVersionLower(String version, String minVersion) {
         if (version == null || minVersion == null) return false;
