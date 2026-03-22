@@ -82,15 +82,15 @@ Add the plugin to your parent pom.xml:
 
 # Configuration parameters
 
-| Parameter     |	Default|                      	Description                      |
-|:--------------|:---------:|:------------------------------------------------------:|
-| targetGroupId |	org.srpingframework=5.1.0|              	Target dependency group id               |
-|failOnLowVersion|	false| 	Whether to fail the build when low versions are found| 
-|includeTestScope|	false|	Include test scope dependencies in analysis|
-|includeProvidedScope|	false|	Include provided scope dependencies|
-|includeSystemScope|	false|	Include system scope dependencies|
-|includeOptional|	true|	Include optional dependencies|
-|debug|	false|	Enable debug logging|
+| Parameter            |	Default|                                                               	Description                                                                |
+|:---------------------|:---------:|:-----------------------------------------------------------------------------------------------------------------------------------------:|
+| targetGroups         |	org.srpingframework=5.1.0|                           Comma-separated list of target groups with minimum versions (format: groupId=version)                           |
+| failOnLowVersion     |	false|                                          	Whether to fail the build when low versions are found                                           | 
+| includeTestScope     |	false|                                               	Include test scope dependencies in analysis                                                |
+| includeProvidedScope |	false|                                                   	Include provided scope dependencies                                                    |
+| includeSystemScope   |	false|                                                    	Include system scope dependencies                                                     |
+| includeOptional      |	true|                                                      	Include optional dependencies                                                       |
+| debug                |	false|                                                           	Enable debug logging                                                           |
 
 # Examples
 
@@ -105,7 +105,3 @@ mvn net.olrecon:dependency-governance-plugin:2.1.8:check-versions \
   -DincludeGroups=com.mycompany,org.springframework.boot \
   -DexcludeGroups=org.junit,org.testcontainers
 ```
-
-# Issues
-
-For now plugin works only for one target group id. 

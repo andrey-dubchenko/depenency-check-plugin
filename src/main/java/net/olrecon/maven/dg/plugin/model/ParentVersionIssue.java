@@ -54,6 +54,9 @@ public class ParentVersionIssue {
     @SerializedName("full_path")
     private List<String> fullPath;
 
+    @SerializedName("target_group_id")
+    private String targetGroupId;
+
     public ParentVersionIssue(String moduleName) {
         this.moduleName = moduleName;
         this.parentChain = new ArrayList<>();
@@ -156,5 +159,13 @@ public class ParentVersionIssue {
         this.parentGroupId = groupId;
         this.parentArtifactId = artifactId;
         this.parentVersion = version;
+    }
+
+    public String getTargetGroupId() {
+        return targetGroupId;
+    }
+
+    public void setTargetGroupId(String targetGroupId) {
+        this.targetGroupId = targetGroupId;
     }
 }

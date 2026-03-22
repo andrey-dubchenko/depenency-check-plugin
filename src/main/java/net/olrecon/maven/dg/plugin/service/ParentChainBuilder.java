@@ -24,18 +24,18 @@ public class ParentChainBuilder {
     private final ArtifactFactory artifactFactory;
     private final ArtifactRepository localRepository;
     private final List remoteRepositories;
-    private final String targetGroupId;
+    private final Set<String> targetGroupIds;
 
     public ParentChainBuilder(ArtifactResolver artifactResolver,
                               ArtifactFactory artifactFactory,
                               ArtifactRepository localRepository,
                               List remoteRepositories,
-                              String targetGroupId) {
+                              Set<String> targetGroupIds) {
         this.artifactResolver = artifactResolver;
         this.artifactFactory = artifactFactory;
         this.localRepository = localRepository;
         this.remoteRepositories = remoteRepositories;
-        this.targetGroupId = targetGroupId;
+        this.targetGroupIds = targetGroupIds;
     }
 
     public class ParentChain {
@@ -43,7 +43,6 @@ public class ParentChainBuilder {
         public String artifactId;
         public String version;
         public List<ParentInfo> parents = new ArrayList<>();
-        public boolean hasTargetGroup = false;
         public String targetParentVersion = null;
 
         public ParentChain(String groupId, String artifactId, String version) {
@@ -55,10 +54,17 @@ public class ParentChainBuilder {
         public void addParent(String groupId, String artifactId, String version) {
             parents.add(new ParentInfo(groupId, artifactId, version));
 
-            if (groupId.equals(targetGroupId)) {
-                this.hasTargetGroup = true;
+            if (targetGroupIds.contains(groupId)) {
                 this.targetParentVersion = version;
             }
+        }
+
+        public boolean hasTargetGroup(String groupId) {
+            return targetGroupIds.contains(groupId);
+        }
+
+        public String getTargetParentVersion(String groupId) {
+            return targetParentVersion;
         }
     }
 

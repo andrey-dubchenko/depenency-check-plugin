@@ -65,11 +65,13 @@ public class CheckVersionsMojo extends AbstractMojo {
     @Parameter(defaultValue = "${project.remoteArtifactRepositories}", required = true, readonly = true)
     private List remoteArtifactRepositories;
 
-    @Parameter(property = "targetGroupId", defaultValue = "org.springframework")
-    private String targetGroupId;
-
-    @Parameter(property = "minVersion", defaultValue = "1.0.0")
-    private String minVersion;
+    /**
+     * Target groups with minimum versions.
+     * Format: groupId1=version1,groupId2=version2
+     * Example: org.springframework=5.3.0,ru.ps.base=8.0.0
+     */
+    @Parameter(property = "targetGroups", defaultValue = "org.springframework=1.0.0")
+    private String targetGroups;
 
     @Parameter(property = "includeGroups", defaultValue = "")
     private String includeGroups;
@@ -86,17 +88,19 @@ public class CheckVersionsMojo extends AbstractMojo {
     private Gson gson;
     private JsonUtils jsonUtils;
     private ParentChainBuilder parentChainBuilder;
-    private String rootTempDir;  // Директория в корне проекта для временных файлов
+    private String rootTempDir;
+    private Map<String, String> targetGroupsMap; // groupId -> minVersion
 
     @Override
-    public void execute() throws MojoExecutionException, MojoFailureException {
+    public void execute() throws MojoExecutionException {
+        targetGroupsMap = parseTargetGroups(targetGroups);
+
         init();
 
         getLog().info("================================================");
         getLog().info("Parent Version Checker for module: " + project.getArtifactId());
         getLog().info("================================================");
-        getLog().info("Target group: " + targetGroupId);
-        getLog().info("Minimum version: " + minVersion);
+        getLog().info("Target groups: " + targetGroupsMap);
         getLog().info("Temp directory: " + rootTempDir);
 
         try {
@@ -107,6 +111,29 @@ public class CheckVersionsMojo extends AbstractMojo {
             if (debug) e.printStackTrace();
             throw new MojoExecutionException("Error checking parent versions", e);
         }
+    }
+
+    /**
+     * Parses target groups string into a map.
+     * Format: groupId1=version1,groupId2=version2
+     */
+    private Map<String, String> parseTargetGroups(String groups) {
+        Map<String, String> result = new LinkedHashMap<>();
+
+        if (groups == null || groups.trim().isEmpty()) {
+            result.put("org.springframework", "1.0.0");
+            return result;
+        }
+
+        String[] pairs = groups.split(",");
+        for (String pair : pairs) {
+            String[] parts = pair.split("=");
+            String groupId = parts[0].trim();
+            String version = parts.length > 1 ? parts[1].trim() : "1.0.0";
+            result.put(groupId, version);
+        }
+
+        return result;
     }
 
     private void init() {
@@ -122,7 +149,7 @@ public class CheckVersionsMojo extends AbstractMojo {
                 artifactFactory,
                 localRepository,
                 remoteArtifactRepositories,
-                targetGroupId
+                targetGroupsMap.keySet() // Pass all target groups
         );
 
         MavenProject topProject = session.getTopLevelProject();
@@ -141,7 +168,7 @@ public class CheckVersionsMojo extends AbstractMojo {
                 session,
                 dependencyGraphBuilder,
                 parentChainBuilder,
-                minVersion
+                targetGroupsMap // Pass all target groups with versions
         );
 
         MavenDependencyTree moduleTree = analyzer.buildDependencyTree(moduleName);
@@ -165,25 +192,32 @@ public class CheckVersionsMojo extends AbstractMojo {
             try {
                 ParentChainBuilder.ParentChain chain = parentChainBuilder.buildParentChain(artifact);
 
-                if (chain.hasTargetGroup) {
-                    boolean isLowVersion = VersionComparator.isVersionLower(
-                            chain.targetParentVersion, minVersion
-                    );
+                // Check all target groups found in the parent chain
+                for (Map.Entry<String, String> target : targetGroupsMap.entrySet()) {
+                    String targetGroupId = target.getKey();
+                    String minVersion = target.getValue();
 
-                    ParentVersionIssue issue = new ParentVersionIssue(moduleName);
-                    issue.setLibrary(chain.groupId, chain.artifactId, chain.version);
-                    issue.setDependency(chain.groupId, chain.artifactId, chain.version);
-                    issue.setParentVersion(chain.targetParentVersion);
-                    issue.setMinExpectedVersion(minVersion);
-                    issue.setError(isLowVersion);
+                    if (chain.hasTargetGroup(targetGroupId)) {
+                        boolean isLowVersion = VersionComparator.isVersionLower(
+                                chain.getTargetParentVersion(targetGroupId), minVersion
+                        );
 
-                    Map<String, List<DependencySource>> sources = analyzer.getDependencySources();
-                    String depKey = artifact.getArtifactId();
-                    if (sources.containsKey(depKey) && !sources.get(depKey).isEmpty()) {
-                        issue.setSource(sources.get(depKey).get(0));
+                        ParentVersionIssue issue = new ParentVersionIssue(moduleName);
+                        issue.setTargetGroupId(targetGroupId);
+                        issue.setLibrary(chain.groupId, chain.artifactId, chain.version);
+                        issue.setDependency(chain.groupId, chain.artifactId, chain.version);
+                        issue.setParentVersion(chain.getTargetParentVersion(targetGroupId));
+                        issue.setMinExpectedVersion(minVersion);
+                        issue.setError(isLowVersion);
+
+                        Map<String, List<DependencySource>> sources = analyzer.getDependencySources();
+                        String depKey = artifact.getArtifactId();
+                        if (sources.containsKey(depKey) && !sources.get(depKey).isEmpty()) {
+                            issue.setSource(sources.get(depKey).get(0));
+                        }
+
+                        issues.add(issue);
                     }
-
-                    issues.add(issue);
                 }
             } catch (Exception e) {
                 if (debug) {
@@ -268,11 +302,17 @@ public class CheckVersionsMojo extends AbstractMojo {
         } else {
             getLog().warn("⚠️ Module " + moduleName + ": found " + errorCount + " errors");
             if (debug) {
-                for (ParentVersionIssue issue : issues) {
-                    if (issue.isError()) {
-                        getLog().warn("  - " + issue.getLibraryArtifactId() + ":" +
+                // Group errors by target group
+                Map<String, List<ParentVersionIssue>> errorsByGroup = issues.stream()
+                        .filter(ParentVersionIssue::isError)
+                        .collect(Collectors.groupingBy(ParentVersionIssue::getTargetGroupId));
+
+                for (Map.Entry<String, List<ParentVersionIssue>> entry : errorsByGroup.entrySet()) {
+                    getLog().warn("  Target group: " + entry.getKey());
+                    for (ParentVersionIssue issue : entry.getValue()) {
+                        getLog().warn("    - " + issue.getLibraryArtifactId() + ":" +
                                 issue.getLibraryVersion() + " uses " +
-                                targetGroupId + ":" + issue.getParentVersion());
+                                entry.getKey() + ":" + issue.getParentVersion());
                     }
                 }
             }

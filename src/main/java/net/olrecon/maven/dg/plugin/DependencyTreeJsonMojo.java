@@ -41,7 +41,7 @@ import java.util.Set;
 
 @Mojo(
         name = "dependency-tree-json",
-        defaultPhase = LifecyclePhase.VALIDATE,
+        defaultPhase = LifecyclePhase.COMPILE,
         requiresDependencyResolution = org.apache.maven.plugins.annotations.ResolutionScope.TEST,
         threadSafe = true,
         aggregator = true

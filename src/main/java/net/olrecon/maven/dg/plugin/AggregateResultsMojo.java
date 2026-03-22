@@ -26,7 +26,7 @@ import java.util.stream.Collectors;
 
 @Mojo(
         name = "aggregate",
-        defaultPhase = LifecyclePhase.VERIFY,
+        defaultPhase = LifecyclePhase.VALIDATE,
         requiresProject = true,
         threadSafe = true
 )

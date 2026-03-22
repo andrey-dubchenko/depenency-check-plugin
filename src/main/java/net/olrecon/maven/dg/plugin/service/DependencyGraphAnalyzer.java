@@ -25,7 +25,7 @@ public class DependencyGraphAnalyzer {
     private final MavenSession session;
     private final DependencyGraphBuilder dependencyGraphBuilder;
     private final ParentChainBuilder parentChainBuilder;
-    private final String minVersion;
+    private final Map<String, String> targetGroupsMap;
     private final Map<String, ParentChainBuilder.ParentChain> parentChainCache;
     private final Map<String, List<DependencySource>> dependencySources;
 
@@ -33,12 +33,12 @@ public class DependencyGraphAnalyzer {
                                    MavenSession session,
                                    DependencyGraphBuilder dependencyGraphBuilder,
                                    ParentChainBuilder parentChainBuilder,
-                                   String minVersion) {
+                                   Map<String, String> targetGroupsMap) {
         this.project = project;
         this.session = session;
         this.dependencyGraphBuilder = dependencyGraphBuilder;
         this.parentChainBuilder = parentChainBuilder;
-        this.minVersion = minVersion;
+        this.targetGroupsMap = targetGroupsMap;
         this.parentChainCache = new HashMap<>();
         this.dependencySources = new HashMap<>();
     }
@@ -147,13 +147,13 @@ public class DependencyGraphAnalyzer {
 
             ParentChainBuilder.ParentChain chain = parentChainCache.get(cacheKey);
 
-            if (chain.hasTargetGroup) {
+            if (chain.hasTargetGroup(artifact.getGroupId())) {
                 ParentVersionInfo info = new ParentVersionInfo();
 
                 info.setHasTargetGroup(true);
                 info.setTargetParentVersion(chain.targetParentVersion);
-                info.setMinimumExpected(minVersion);
-                info.setLowVersion(VersionComparator.isVersionLower(chain.targetParentVersion, minVersion));
+                info.setMinimumExpected(targetGroupsMap.get(artifact.getGroupId()));
+                info.setLowVersion(VersionComparator.isVersionLower(chain.targetParentVersion, targetGroupsMap.get(artifact.getGroupId())));
                 info.setParentChain(chain.parents);
 
                 return info;
