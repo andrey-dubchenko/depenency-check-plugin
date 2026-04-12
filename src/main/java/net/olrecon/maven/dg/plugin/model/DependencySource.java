@@ -1,27 +1,21 @@
 package net.olrecon.maven.dg.plugin.model;
 
+import lombok.Value;
+
 import java.util.List;
 
+/**
+ * Source (origin) of a dependency — the artifact that pulled it in, and its path in the graph
+ */
+@Value
 public class DependencySource {
-    private String sourceArtifactId;
-    private String sourceVersion;
-    private List<String> path;
 
-    public DependencySource(String sourceArtifactId, String sourceVersion, List<String> path) {
-        this.sourceArtifactId = sourceArtifactId;
-        this.sourceVersion = sourceVersion;
-        this.path = path;
-    }
+    /** ArtifactId of the source artifact */
+    String sourceArtifactId;
 
-    public String getSourceArtifactId() {
-        return sourceArtifactId;
-    }
+    /** Version of the source artifact */
+    String sourceVersion;
 
-    public String getSourceVersion() {
-        return sourceVersion;
-    }
-
-    public List<String> getPath() {
-        return path;
-    }
+    /** Path from the root to this dependency */
+    List<String> path;
 }

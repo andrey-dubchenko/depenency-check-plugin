@@ -1,11 +1,18 @@
 package net.olrecon.maven.dg.plugin.model;
 
 import com.google.gson.annotations.SerializedName;
+import lombok.Data;
 
 import java.util.ArrayList;
 import java.util.List;
 
+/**
+ * Record of a detected violation: a dependency uses a parent POM
+ * with a version below the minimum allowed
+ */
+@Data
 public class ParentVersionIssue {
+
     @SerializedName("module_name")
     private String moduleName;
 
@@ -18,6 +25,7 @@ public class ParentVersionIssue {
     @SerializedName("library_version")
     private String libraryVersion;
 
+    /** ArtifactId of the source — who introduced this dependency */
     @SerializedName("source_library")
     private String sourceLibrary;
 
@@ -45,127 +53,48 @@ public class ParentVersionIssue {
     @SerializedName("minimum_expected_version")
     private String minExpectedVersion;
 
+    /** Error flag: parent version is below the minimum */
     @SerializedName("is_error")
-    private boolean isError;
+    private boolean error;
 
     @SerializedName("parent_chain")
-    private List<ParentInfo> parentChain;
+    private List<ParentInfo> parentChain = new ArrayList<>();
 
+    /** Full dependency path from the root */
     @SerializedName("full_path")
-    private List<String> fullPath;
-
-    @SerializedName("target_group_id")
-    private String targetGroupId;
+    private List<String> fullPath = new ArrayList<>();
 
     public ParentVersionIssue(String moduleName) {
         this.moduleName = moduleName;
-        this.parentChain = new ArrayList<>();
-        this.fullPath = new ArrayList<>();
     }
 
-    public String getModuleName() {
-        return moduleName;
-    }
-
-    public void setLibraryGroupId(String libraryGroupId) {
-        this.libraryGroupId = libraryGroupId;
-    }
-
-    public String getLibraryArtifactId() {
-        return libraryArtifactId;
-    }
-
-    public void setLibraryArtifactId(String libraryArtifactId) {
-        this.libraryArtifactId = libraryArtifactId;
-    }
-
-    public String getLibraryVersion() {
-        return libraryVersion;
-    }
-
-    public void setLibraryVersion(String libraryVersion) {
-        this.libraryVersion = libraryVersion;
-    }
-
-    public void setSourceLibrary(String sourceLibrary) {
-        this.sourceLibrary = sourceLibrary;
-    }
-
-    public void setSourceVersion(String sourceVersion) {
-        this.sourceVersion = sourceVersion;
-    }
-
-    public void setDependencyGroupId(String dependencyGroupId) {
-        this.dependencyGroupId = dependencyGroupId;
-    }
-
-    public void setDependencyArtifactId(String dependencyArtifactId) {
-        this.dependencyArtifactId = dependencyArtifactId;
-    }
-
-    public void setDependencyVersion(String dependencyVersion) {
-        this.dependencyVersion = dependencyVersion;
-    }
-
-    public String getParentVersion() {
-        return parentVersion;
-    }
-
-    public void setParentVersion(String parentVersion) {
-        this.parentVersion = parentVersion;
-    }
-
-    public void setMinExpectedVersion(String minExpectedVersion) {
-        this.minExpectedVersion = minExpectedVersion;
-    }
-
-    public boolean isError() {
-        return isError;
-    }
-
-    public void setError(boolean error) {
-        isError = error;
-    }
-
-    public void setFullPath(List<String> fullPath) {
-        this.fullPath = fullPath;
-    }
-
-    public void addToChain(String groupId, String artifactId, String version) {
-        this.parentChain.add(new ParentInfo(groupId, artifactId, version));
-    }
-
+    /** Sets the data for the violating library */
     public void setLibrary(String groupId, String artifactId, String version) {
         this.libraryGroupId = groupId;
         this.libraryArtifactId = artifactId;
         this.libraryVersion = version;
     }
 
-    public void setSource(DependencySource source) {
-        if (source != null) {
-            this.sourceLibrary = source.getSourceArtifactId();
-            this.sourceVersion = source.getSourceVersion();
-            this.fullPath = source.getPath();
-        }
-    }
-
+    /** Sets the data for the direct dependency */
     public void setDependency(String groupId, String artifactId, String version) {
         this.dependencyGroupId = groupId;
         this.dependencyArtifactId = artifactId;
         this.dependencyVersion = version;
     }
 
+    /** Sets the data for the parent POM */
     public void setParent(String groupId, String artifactId, String version) {
         this.parentGroupId = groupId;
         this.parentArtifactId = artifactId;
         this.parentVersion = version;
     }
 
-    public String getTargetGroupId() {
-        return targetGroupId;
-    }
-
-    public void setTargetGroupId(String targetGroupId) {
-        this.targetGroupId = targetGroupId;
+    /** Populates the dependency source information */
+    public void setSource(DependencySource source) {
+        if (source != null) {
+            this.sourceLibrary = source.getSourceArtifactId();
+            this.sourceVersion = source.getSourceVersion();
+            this.fullPath = source.getPath();
+        }
     }
 }

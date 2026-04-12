@@ -7,7 +7,6 @@ import net.olrecon.maven.dg.plugin.model.MavenDependencyTree;
 import net.olrecon.maven.dg.plugin.model.ParentVersionIssue;
 import net.olrecon.maven.dg.plugin.service.DependencyGraphAnalyzer;
 import net.olrecon.maven.dg.plugin.service.ParentChainBuilder;
-import net.olrecon.maven.dg.plugin.util.JsonUtils;
 import net.olrecon.maven.dg.plugin.util.VersionComparator;
 import org.apache.maven.artifact.Artifact;
 import org.apache.maven.artifact.factory.ArtifactFactory;
@@ -30,6 +29,7 @@ import java.io.Writer;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -37,6 +37,10 @@ import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+/**
+ * Maven plugin: checks parent POM versions for the dependencies of the current module.
+ * Saves results to a temporary directory for subsequent aggregation.
+ */
 @Mojo(
         name = "check-versions",
         defaultPhase = LifecyclePhase.PACKAGE,
@@ -44,6 +48,7 @@ import java.util.stream.Collectors;
         threadSafe = true
 )
 public class CheckVersionsMojo extends AbstractMojo {
+
     @Parameter(defaultValue = "${project}", readonly = true)
     private MavenProject project;
 
@@ -66,158 +71,160 @@ public class CheckVersionsMojo extends AbstractMojo {
     private List remoteArtifactRepositories;
 
     /**
-     * Target groups with minimum versions.
-     * Format: groupId1=version1,groupId2=version2
-     * Example: org.springframework=5.3.0,ru.ps.base=8.0.0
+     * Target groups for version checking (comma-separated).
+     * Example: "org.springframework,org.springframework.boot"
      */
-    @Parameter(property = "targetGroups", defaultValue = "org.springframework=1.0.0")
-    private String targetGroups;
+    @Parameter(property = "targetGroupId", defaultValue = "org.springframework")
+    private String targetGroupId;
 
+    /** Parsed list of targetGroupId values (computed during initialization) */
+    private List<String> targetGroupIds;
+
+    /** Minimum allowed parent version from the target group */
+    @Parameter(property = "minVersion", defaultValue = "1.0.0")
+    private String minVersion;
+
+    /** List of groupId values to include in analysis (comma-separated); empty means analyze all */
     @Parameter(property = "includeGroups", defaultValue = "")
     private String includeGroups;
 
+    /** List of groupId values to exclude from analysis (comma-separated) */
     @Parameter(property = "excludeGroups", defaultValue = "")
     private String excludeGroups;
 
+    /** Directory for result temporary files (relative to the project root) */
     @Parameter(property = "tempDir", defaultValue = "target/dependency-governance-temp")
     private String tempDir;
+
+    /**
+     * If true, the build will fail immediately when violations are found in a module,
+     * without waiting for the aggregate phase. Use -DfailOnError=true.
+     */
+    @Parameter(property = "failOnError", defaultValue = "false")
+    private boolean failOnError;
 
     @Parameter(property = "debug", defaultValue = "false")
     private boolean debug;
 
     private Gson gson;
-    private JsonUtils jsonUtils;
     private ParentChainBuilder parentChainBuilder;
+
+    /** Absolute path to the temporary files directory (at the project root) */
     private String rootTempDir;
-    private Map<String, String> targetGroupsMap; // groupId -> minVersion
 
     @Override
-    public void execute() throws MojoExecutionException {
-        targetGroupsMap = parseTargetGroups(targetGroups);
+    public void execute() throws MojoExecutionException, MojoFailureException {
+        initComponents();
+        logStartInfo();
 
-        init();
-
-        getLog().info("================================================");
-        getLog().info("Parent Version Checker for module: " + project.getArtifactId());
-        getLog().info("================================================");
-        getLog().info("Target groups: " + targetGroupsMap);
-        getLog().info("Temp directory: " + rootTempDir);
-
+        List<ParentVersionIssue> issues;
         try {
-            analyzeModule();
-
+            issues = analyzeModule();
         } catch (Exception e) {
-            getLog().error("Error: " + e.getMessage());
-            if (debug) e.printStackTrace();
+            getLog().error("Error checking parent versions: " + e.getMessage());
+            if (debug) {
+                e.printStackTrace();
+            }
             throw new MojoExecutionException("Error checking parent versions", e);
         }
+
+        // MojoFailureException is thrown outside try/catch so it is not wrapped in MojoExecutionException
+        if (failOnError) {
+            long errorCount = issues.stream().filter(ParentVersionIssue::isError).count();
+            if (errorCount > 0) {
+                throw new MojoFailureException(
+                        "Module " + project.getArtifactId() + ": found " + errorCount
+                                + " dependencies with low parent POM version!"
+                );
+            }
+        }
     }
 
-    /**
-     * Parses target groups string into a map.
-     * Format: groupId1=version1,groupId2=version2
-     */
-    private Map<String, String> parseTargetGroups(String groups) {
-        Map<String, String> result = new LinkedHashMap<>();
-
-        if (groups == null || groups.trim().isEmpty()) {
-            result.put("org.springframework", "1.0.0");
-            return result;
-        }
-
-        String[] pairs = groups.split(",");
-        for (String pair : pairs) {
-            String[] parts = pair.split("=");
-            String groupId = parts[0].trim();
-            String version = parts.length > 1 ? parts[1].trim() : "1.0.0";
-            result.put(groupId, version);
-        }
-
-        return result;
-    }
-
-    private void init() {
+    /** Initializes gson, ParentChainBuilder, and the path to the temporary directory */
+    private void initComponents() {
         gson = new GsonBuilder()
                 .setPrettyPrinting()
                 .disableHtmlEscaping()
                 .create();
 
-        jsonUtils = new JsonUtils(gson);
+        targetGroupIds = Arrays.stream(targetGroupId.split(","))
+                .map(String::trim)
+                .filter(s -> !s.isEmpty())
+                .collect(Collectors.toList());
 
         parentChainBuilder = new ParentChainBuilder(
                 artifactResolver,
                 artifactFactory,
                 localRepository,
                 remoteArtifactRepositories,
-                targetGroupsMap.keySet() // Pass all target groups
+                targetGroupIds,
+                session,
+                getLog()
         );
 
         MavenProject topProject = session.getTopLevelProject();
-        String rootDir = topProject != null ?
-                topProject.getBasedir().getAbsolutePath() :
-                project.getBasedir().getAbsolutePath();
+        String rootDir = topProject != null
+                ? topProject.getBasedir().getAbsolutePath()
+                : project.getBasedir().getAbsolutePath();
 
         rootTempDir = rootDir + "/" + tempDir;
     }
 
-    private void analyzeModule() throws Exception {
+    private void logStartInfo() {
+        getLog().info("================================================");
+        getLog().info("Parent Version Checker for module: " + project.getArtifactId());
+        getLog().info("================================================");
+        getLog().info("Target groups: " + targetGroupIds);
+        getLog().info("Minimum version: " + minVersion);
+        getLog().info("Temp directory: " + rootTempDir);
+    }
+
+    /** Main module analysis method: builds the tree, collects errors, saves results. Returns all found issues. */
+    private List<ParentVersionIssue> analyzeModule() throws Exception {
         String moduleName = project.getArtifactId();
 
-        DependencyGraphAnalyzer analyzer = new DependencyGraphAnalyzer(
+        DependencyGraphAnalyzer analyzer = createAnalyzer();
+        MavenDependencyTree moduleTree = analyzer.buildDependencyTree(moduleName);
+
+        Set<Artifact> artifacts = project.getArtifacts();
+        List<ParentVersionIssue> issues = detectVersionIssues(artifacts, moduleName, analyzer);
+
+        saveModuleResults(moduleName, issues, moduleTree);
+        reportModuleIssues(moduleName, issues);
+
+        return issues;
+    }
+
+    /** Creates a dependency graph analyzer for the current module */
+    private DependencyGraphAnalyzer createAnalyzer() {
+        return new DependencyGraphAnalyzer(
                 project,
                 session,
                 dependencyGraphBuilder,
                 parentChainBuilder,
-                targetGroupsMap // Pass all target groups with versions
+                minVersion,
+                getLog()
         );
-
-        MavenDependencyTree moduleTree = analyzer.buildDependencyTree(moduleName);
-
-        Set<Artifact> artifacts = project.getArtifacts();
-        List<ParentVersionIssue> moduleIssues = analyzeArtifacts(artifacts, moduleName, analyzer);
-
-        saveModuleResults(moduleName, moduleIssues, moduleTree);
-
-        reportModuleIssues(moduleName, moduleIssues);
     }
 
-    private List<ParentVersionIssue> analyzeArtifacts(Set<Artifact> artifacts,
-                                                      String moduleName,
-                                                      DependencyGraphAnalyzer analyzer) {
+    /**
+     * Iterates over module artifacts, builds parent chains, and detects version violations.
+     * Artifacts are filtered by includeGroups / excludeGroups.
+     */
+    private List<ParentVersionIssue> detectVersionIssues(Set<Artifact> artifacts,
+                                                          String moduleName,
+                                                          DependencyGraphAnalyzer analyzer) {
         List<ParentVersionIssue> issues = new ArrayList<>();
 
         for (Artifact artifact : artifacts) {
-            if (!shouldAnalyze(artifact.getGroupId())) continue;
+            if (!isGroupIncluded(artifact.getGroupId())) {
+                continue;
+            }
 
             try {
-                ParentChainBuilder.ParentChain chain = parentChainBuilder.buildParentChain(artifact);
-
-                // Check all target groups found in the parent chain
-                for (Map.Entry<String, String> target : targetGroupsMap.entrySet()) {
-                    String targetGroupId = target.getKey();
-                    String minVersion = target.getValue();
-
-                    if (chain.hasTargetGroup(targetGroupId)) {
-                        boolean isLowVersion = VersionComparator.isVersionLower(
-                                chain.getTargetParentVersion(targetGroupId), minVersion
-                        );
-
-                        ParentVersionIssue issue = new ParentVersionIssue(moduleName);
-                        issue.setTargetGroupId(targetGroupId);
-                        issue.setLibrary(chain.groupId, chain.artifactId, chain.version);
-                        issue.setDependency(chain.groupId, chain.artifactId, chain.version);
-                        issue.setParentVersion(chain.getTargetParentVersion(targetGroupId));
-                        issue.setMinExpectedVersion(minVersion);
-                        issue.setError(isLowVersion);
-
-                        Map<String, List<DependencySource>> sources = analyzer.getDependencySources();
-                        String depKey = artifact.getArtifactId();
-                        if (sources.containsKey(depKey) && !sources.get(depKey).isEmpty()) {
-                            issue.setSource(sources.get(depKey).get(0));
-                        }
-
-                        issues.add(issue);
-                    }
+                ParentVersionIssue issue = analyzeArtifact(artifact, moduleName, analyzer);
+                if (issue != null) {
+                    issues.add(issue);
                 }
             } catch (Exception e) {
                 if (debug) {
@@ -229,93 +236,139 @@ public class CheckVersionsMojo extends AbstractMojo {
         return issues;
     }
 
-    private boolean shouldAnalyze(String groupId) {
-        if (groupId == null) return false;
+    /**
+     * Analyzes a single artifact: builds the parent chain and creates a violation record.
+     * Returns null if the target group is not found in the chain.
+     */
+    private ParentVersionIssue analyzeArtifact(Artifact artifact,
+                                                String moduleName,
+                                                DependencyGraphAnalyzer analyzer) throws Exception {
+        ParentChainBuilder.ParentChain chain = parentChainBuilder.buildParentChain(artifact);
 
-        Set<String> includes = parseSet(includeGroups);
-        Set<String> excludes = parseSet(excludeGroups);
+        if (!chain.isHasTargetGroup()) {
+            return null;
+        }
+
+        boolean isLowVersion = VersionComparator.isVersionLower(chain.getTargetParentVersion(), minVersion);
+
+        ParentVersionIssue issue = new ParentVersionIssue(moduleName);
+        issue.setLibrary(chain.getGroupId(), chain.getArtifactId(), chain.getVersion());
+        issue.setDependency(chain.getGroupId(), chain.getArtifactId(), chain.getVersion());
+        issue.setParentVersion(chain.getTargetParentVersion());
+        issue.setMinExpectedVersion(minVersion);
+        issue.setError(isLowVersion);
+        issue.setParentChain(chain.getParents());
+
+        // Set the source — who introduced this dependency
+        attachSourceInfo(issue, artifact, analyzer);
+
+        return issue;
+    }
+
+    /** Populates the dependency source information */
+    private void attachSourceInfo(ParentVersionIssue issue,
+                                   Artifact artifact,
+                                   DependencyGraphAnalyzer analyzer) {
+        Map<String, List<DependencySource>> sources = analyzer.getDependencySources();
+        List<DependencySource> artifactSources = sources.get(artifact.getArtifactId());
+        if (artifactSources != null && !artifactSources.isEmpty()) {
+            issue.setSource(artifactSources.get(0));
+        }
+    }
+
+    /**
+     * Determines whether a dependency with the given groupId should be analyzed.
+     * Applies the includeGroups and excludeGroups filters.
+     */
+    private boolean isGroupIncluded(String groupId) {
+        if (groupId == null) {
+            return false;
+        }
+
+        Set<String> includes = parseCsvToSet(includeGroups);
+        Set<String> excludes = parseCsvToSet(excludeGroups);
 
         if (!includes.isEmpty()) {
-            boolean included = false;
-            for (String include : includes) {
-                if (groupId.startsWith(include)) {
-                    included = true;
-                    break;
-                }
-            }
-            if (!included) return false;
-        }
-
-        for (String exclude : excludes) {
-            if (groupId.startsWith(exclude)) return false;
-        }
-
-        return true;
-    }
-
-    private Set<String> parseSet(String value) {
-        Set<String> result = new HashSet<>();
-        if (value != null && !value.isEmpty()) {
-            for (String s : value.split(",")) {
-                result.add(s.trim());
+            boolean matched = includes.stream().anyMatch(groupId::startsWith);
+            if (!matched) {
+                return false;
             }
         }
-        return result;
+
+        return excludes.stream().noneMatch(groupId::startsWith);
     }
 
+    /** Parses a comma-separated string into a set of strings */
+    private Set<String> parseCsvToSet(String value) {
+        if (value == null || value.trim().isEmpty()) {
+            return new HashSet<>();
+        }
+        return Arrays.stream(value.split(","))
+                .map(String::trim)
+                .filter(s -> !s.isEmpty())
+                .collect(Collectors.toSet());
+    }
+
+    /** Saves module results to the temporary directory for later aggregation */
     private void saveModuleResults(String moduleName,
                                    List<ParentVersionIssue> issues,
                                    MavenDependencyTree moduleTree) throws Exception {
-
         Files.createDirectories(Paths.get(rootTempDir));
 
-        if (moduleTree != null) {
-            File treeFile = new File(rootTempDir, moduleName + "-tree.json");
-            try (Writer writer = new FileWriter(treeFile)) {
-                gson.toJson(moduleTree, writer);
-            }
-            getLog().debug("Tree saved for aggregation: " + treeFile.getAbsolutePath());
-        }
+        saveTreeFile(moduleName, moduleTree);
+        saveErrorsFile(moduleName, issues);
+    }
 
+    /** Saves the module dependency tree */
+    private void saveTreeFile(String moduleName, MavenDependencyTree moduleTree) throws Exception {
+        if (moduleTree == null) {
+            return;
+        }
+        File treeFile = new File(rootTempDir, moduleName + "-tree.json");
+        try (Writer writer = new FileWriter(treeFile)) {
+            gson.toJson(moduleTree, writer);
+        }
+        getLog().debug("Tree saved: " + treeFile.getAbsolutePath());
+    }
+
+    /** Saves the module error file (only when errors are present) */
+    private void saveErrorsFile(String moduleName, List<ParentVersionIssue> issues) throws Exception {
         List<ParentVersionIssue> errors = issues.stream()
                 .filter(ParentVersionIssue::isError)
                 .collect(Collectors.toList());
 
-        if (!errors.isEmpty()) {
-            File errorFile = new File(rootTempDir, moduleName + "-errors.json");
-            Map<String, Object> errorData = new LinkedHashMap<>();
-            errorData.put("module", moduleName);
-            errorData.put("errors", errors);
-
-            try (Writer writer = new FileWriter(errorFile)) {
-                gson.toJson(errorData, writer);
-            }
-            getLog().info("Saved " + errors.size() + " errors for aggregation");
+        if (errors.isEmpty()) {
+            return;
         }
+
+        File errorFile = new File(rootTempDir, moduleName + "-errors.json");
+        Map<String, Object> errorData = new LinkedHashMap<>();
+        errorData.put("module", moduleName);
+        errorData.put("errors", errors);
+
+        try (Writer writer = new FileWriter(errorFile)) {
+            gson.toJson(errorData, writer);
+        }
+        getLog().info("Saved " + errors.size() + " errors for aggregation");
     }
 
+    /** Logs the final summary for the module */
     private void reportModuleIssues(String moduleName, List<ParentVersionIssue> issues) {
         long errorCount = issues.stream().filter(ParentVersionIssue::isError).count();
 
         if (errorCount == 0) {
-            getLog().info("✅ Module " + moduleName + ": OK");
-        } else {
-            getLog().warn("⚠️ Module " + moduleName + ": found " + errorCount + " errors");
-            if (debug) {
-                // Group errors by target group
-                Map<String, List<ParentVersionIssue>> errorsByGroup = issues.stream()
-                        .filter(ParentVersionIssue::isError)
-                        .collect(Collectors.groupingBy(ParentVersionIssue::getTargetGroupId));
+            getLog().info("OK: " + moduleName);
+            return;
+        }
 
-                for (Map.Entry<String, List<ParentVersionIssue>> entry : errorsByGroup.entrySet()) {
-                    getLog().warn("  Target group: " + entry.getKey());
-                    for (ParentVersionIssue issue : entry.getValue()) {
-                        getLog().warn("    - " + issue.getLibraryArtifactId() + ":" +
-                                issue.getLibraryVersion() + " uses " +
-                                entry.getKey() + ":" + issue.getParentVersion());
-                    }
-                }
-            }
+        getLog().warn("ERRORS in module " + moduleName + ": " + errorCount);
+        if (debug) {
+            issues.stream()
+                    .filter(ParentVersionIssue::isError)
+                    .forEach(issue -> getLog().warn(
+                            "  - " + issue.getLibraryArtifactId() + ":" + issue.getLibraryVersion()
+                                    + " uses " + targetGroupIds + ":" + issue.getParentVersion()
+                    ));
         }
     }
 }

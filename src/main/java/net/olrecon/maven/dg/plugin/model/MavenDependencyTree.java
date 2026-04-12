@@ -1,12 +1,21 @@
 package net.olrecon.maven.dg.plugin.model;
 
 import com.google.gson.annotations.SerializedName;
+import lombok.Getter;
+import lombok.Setter;
 import org.apache.maven.artifact.Artifact;
 
 import java.util.ArrayList;
 import java.util.List;
 
+/**
+ * Node of the Maven module dependency tree.
+ * Recursive structure: each node contains a list of child nodes.
+ */
+@Getter
+@Setter
 public class MavenDependencyTree {
+
     @SerializedName("groupId")
     private String groupId;
 
@@ -22,8 +31,11 @@ public class MavenDependencyTree {
     @SerializedName("type")
     private String type;
 
-    @SerializedName("children")
-    private List<MavenDependencyTree> children;
+    @SerializedName("classifier")
+    private String classifier;
+
+    @SerializedName("optional")
+    private boolean optional;
 
     @SerializedName("module")
     private String module;
@@ -31,31 +43,21 @@ public class MavenDependencyTree {
     @SerializedName("parent_version_info")
     private ParentVersionInfo parentVersionInfo;
 
+    @SerializedName("children")
+    private List<MavenDependencyTree> children = new ArrayList<>();
+
+    /** Creates a tree node from a Maven artifact */
     public MavenDependencyTree(Artifact artifact) {
         this.groupId = artifact.getGroupId();
         this.artifactId = artifact.getArtifactId();
         this.version = artifact.getVersion();
         this.scope = artifact.getScope() != null ? artifact.getScope() : "compile";
         this.type = artifact.getType() != null ? artifact.getType() : "jar";
-        this.children = new ArrayList<>();
+        this.classifier = artifact.getClassifier();
+        this.optional = artifact.isOptional();
     }
 
-    public String getVersion() {
-        return version;
-    }
-
-    public void setVersion(String version) {
-        this.version = version;
-    }
-
-    public void setModule(String module) {
-        this.module = module;
-    }
-
-    public void setParentVersionInfo(ParentVersionInfo parentVersionInfo) {
-        this.parentVersionInfo = parentVersionInfo;
-    }
-
+    /** Adds a child node to the tree */
     public void addChild(MavenDependencyTree child) {
         this.children.add(child);
     }
