@@ -43,7 +43,7 @@ public class DependencyGraphAnalyzer {
     /** Cache of parent chains to avoid redundant repository lookups */
     private final Map<String, ParentChainBuilder.ParentChain> parentChainCache = new HashMap<>();
 
-    /** Map of dependency sources: artifactId → list of sources */
+    /** Map of dependency sources: groupId:artifactId:version → list of sources */
     private final Map<String, List<DependencySource>> dependencySources = new HashMap<>();
 
     public DependencyGraphAnalyzer(MavenProject project,
@@ -159,23 +159,28 @@ public class DependencyGraphAnalyzer {
      * Only recorded when the node has a parent (i.e. it is not a direct dependency).
      */
     private void registerDependencySource(DependencyNode node, Artifact artifact) {
-        if (node.getParent() == null || node.getParent().getArtifact() == null) {
+        DependencyNode parent = node.getParent();
+        if (parent == null || parent.getArtifact() == null || isProjectArtifact(parent.getArtifact())) {
+            // Direct dependency of the module — there is no intermediate source
             return;
         }
 
         DependencySource source = buildDependencySource(node, artifact);
         dependencySources
-                .computeIfAbsent(artifact.getArtifactId(), k -> new ArrayList<>())
+                .computeIfAbsent(artifactKey(artifact), k -> new ArrayList<>())
                 .add(source);
     }
 
-    /** Creates a dependency source object */
+    /** Creates a dependency source object with the full path from the module's direct dependency */
     private DependencySource buildDependencySource(DependencyNode node, Artifact artifact) {
         Artifact parentArtifact = node.getParent().getArtifact();
 
         List<String> path = new ArrayList<>();
-        path.add(artifactKey(parentArtifact));
-        path.add(artifactKey(artifact));
+        for (DependencyNode current = node;
+             current != null && current.getArtifact() != null && !isProjectArtifact(current.getArtifact());
+             current = current.getParent()) {
+            path.add(0, artifactKey(current.getArtifact()));
+        }
 
         return new DependencySource(
                 parentArtifact.getArtifactId(),

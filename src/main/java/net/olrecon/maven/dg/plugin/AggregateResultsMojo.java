@@ -6,6 +6,7 @@ import net.olrecon.maven.dg.plugin.model.MavenDependencyTree;
 import net.olrecon.maven.dg.plugin.model.ParentVersionIssue;
 import net.olrecon.maven.dg.plugin.util.HtmlReportGenerator;
 import net.olrecon.maven.dg.plugin.util.JsonUtils;
+import net.olrecon.maven.dg.plugin.util.ModuleNaming;
 import org.apache.maven.execution.MavenSession;
 import org.apache.maven.plugin.AbstractMojo;
 import org.apache.maven.plugin.MojoExecutionException;
@@ -15,7 +16,6 @@ import org.apache.maven.plugins.annotations.Mojo;
 import org.apache.maven.plugins.annotations.Parameter;
 import org.apache.maven.project.MavenProject;
 
-import java.io.FileWriter;
 import java.io.Writer;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -25,6 +25,7 @@ import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
@@ -101,6 +102,9 @@ public class AggregateResultsMojo extends AbstractMojo {
     /** Parsed list of targetGroupId values (computed during initialization) */
     private List<String> targetGroupIds;
 
+    /** Reactor modules: result file id -> display name (null when the session is unavailable) */
+    private Map<String, String> moduleNames;
+
     @Override
     public void execute() throws MojoExecutionException, MojoFailureException {
         if (!project.isExecutionRoot()) {
@@ -158,18 +162,36 @@ public class AggregateResultsMojo extends AbstractMojo {
         getLog().info("Root project:   " + project.getArtifactId() + ":" + project.getVersion());
         getLog().info("Temp directory: " + getAbsoluteTempPath());
         getLog().info("Target groups:  " + targetGroupIds);
-        getLog().info("Minimum version:" + minVersion);
+        getLog().info("Minimum version: " + minVersion);
         if (session != null) {
-            long moduleCount = session.getAllProjects().stream()
-                    .filter(p -> !p.equals(project))
-                    .count();
-            getLog().info("Reactor modules:" + moduleCount + " (expected temp files: " + moduleCount + ")");
+            getLog().info("Reactor modules: " + session.getAllProjects().size());
         }
         getLog().info("================================================");
     }
 
     private String getAbsoluteTempPath() {
-        return project.getBasedir().getAbsolutePath() + "/" + tempDir;
+        return resolveAbsolutePath(tempDir).toString();
+    }
+
+    /**
+     * Maps result file ids (groupId.artifactId) of all reactor modules to their display names.
+     * The display name is the artifactId, or groupId:artifactId when the artifactId is not unique.
+     * Returns null when the session is unavailable (no filtering is possible).
+     */
+    private Map<String, String> reactorModuleNames() {
+        if (session == null) {
+            return null;
+        }
+        List<MavenProject> projects = session.getAllProjects();
+        Map<String, Long> artifactIdCounts = projects.stream()
+                .collect(Collectors.groupingBy(MavenProject::getArtifactId, Collectors.counting()));
+        Map<String, String> names = new LinkedHashMap<>();
+        for (MavenProject p : projects) {
+            boolean ambiguous = artifactIdCounts.get(p.getArtifactId()) > 1;
+            names.put(ModuleNaming.fileId(p.getGroupId(), p.getArtifactId()),
+                    ModuleNaming.displayName(p.getGroupId(), p.getArtifactId(), ambiguous));
+        }
+        return names;
     }
 
     /**
@@ -188,7 +210,23 @@ public class AggregateResultsMojo extends AbstractMojo {
             return data;
         }
 
-        List<Path> files = Files.list(tempPath).collect(Collectors.toList());
+        List<Path> files;
+        try (java.util.stream.Stream<Path> stream = Files.list(tempPath)) {
+            files = stream.collect(Collectors.toList());
+        }
+
+        // Ignore stale files of modules that are not part of the current reactor
+        moduleNames = reactorModuleNames();
+        if (moduleNames != null) {
+            files = files.stream().filter(f -> {
+                String name = f.getFileName().toString();
+                boolean known = moduleNames.containsKey(extractModuleName(name));
+                if (!known && (name.endsWith(ModuleNaming.TREE_SUFFIX) || name.endsWith(ModuleNaming.ERRORS_SUFFIX))) {
+                    getLog().debug("Skipping stale file: " + name);
+                }
+                return known;
+            }).collect(Collectors.toList());
+        }
 
         if (files.isEmpty()) {
             getLog().warn("Temp directory is empty — no module results found.");
@@ -213,16 +251,17 @@ public class AggregateResultsMojo extends AbstractMojo {
     /** Processes a single temporary file and adds its contents to data */
     private void processTemporaryFile(Path file, AggregationData data) {
         String fileName = file.getFileName().toString();
-        String moduleName = extractModuleName(fileName);
+        String fileId = extractModuleName(fileName);
+        String moduleName = moduleNames != null ? moduleNames.getOrDefault(fileId, fileId) : fileId;
 
         try {
-            if (fileName.endsWith("-tree.json")) {
+            if (fileName.endsWith(ModuleNaming.TREE_SUFFIX)) {
                 MavenDependencyTree tree = jsonUtils.readTreeFromFile(file.toFile());
                 if (tree != null) {
                     data.getTrees().put(moduleName, tree);
                     getLog().debug("Loaded tree from " + fileName);
                 }
-            } else if (fileName.endsWith("-errors.json")) {
+            } else if (fileName.endsWith(ModuleNaming.ERRORS_SUFFIX)) {
                 List<ParentVersionIssue> errors = jsonUtils.readErrorsFromFile(file.toFile());
                 if (errors != null && !errors.isEmpty()) {
                     data.getErrors().put(moduleName, errors);
@@ -237,11 +276,11 @@ public class AggregateResultsMojo extends AbstractMojo {
 
     /** Extracts the module name from a temporary file name */
     private String extractModuleName(String fileName) {
-        if (fileName.endsWith("-tree.json")) {
-            return fileName.substring(0, fileName.length() - "-tree.json".length());
+        if (fileName.endsWith(ModuleNaming.TREE_SUFFIX)) {
+            return fileName.substring(0, fileName.length() - ModuleNaming.TREE_SUFFIX.length());
         }
-        if (fileName.endsWith("-errors.json")) {
-            return fileName.substring(0, fileName.length() - "-errors.json".length());
+        if (fileName.endsWith(ModuleNaming.ERRORS_SUFFIX)) {
+            return fileName.substring(0, fileName.length() - ModuleNaming.ERRORS_SUFFIX.length());
         }
         return fileName;
     }
@@ -259,7 +298,7 @@ public class AggregateResultsMojo extends AbstractMojo {
 
         Map<String, Object> result = buildTreeResult(trees);
 
-        try (Writer writer = new FileWriter(treePath.toFile())) {
+        try (Writer writer = Files.newBufferedWriter(treePath, java.nio.charset.StandardCharsets.UTF_8)) {
             gson.toJson(result, writer);
         }
 
@@ -285,7 +324,7 @@ public class AggregateResultsMojo extends AbstractMojo {
 
         Map<String, Object> result = buildErrorResult(errors, totalErrors);
 
-        try (Writer writer = new FileWriter(errorPath.toFile())) {
+        try (Writer writer = Files.newBufferedWriter(errorPath, java.nio.charset.StandardCharsets.UTF_8)) {
             gson.toJson(result, writer);
         }
 
@@ -333,7 +372,7 @@ public class AggregateResultsMojo extends AbstractMojo {
 
         String html = generator.generate();
 
-        try (Writer writer = new FileWriter(outputPath.toFile())) {
+        try (Writer writer = Files.newBufferedWriter(outputPath, java.nio.charset.StandardCharsets.UTF_8)) {
             writer.write(html);
         }
 
@@ -354,7 +393,8 @@ public class AggregateResultsMojo extends AbstractMojo {
                 if (debug) {
                     moduleErrors.forEach(error -> getLog().warn(
                             "    - " + error.getLibraryArtifactId() + ":" + error.getLibraryVersion()
-                                    + " uses " + targetGroupIds + ":" + error.getParentVersion()
+                                    + " uses " + error.getParentGroupId() + ":" + error.getParentArtifactId()
+                                    + ":" + error.getParentVersion()
                     ));
                 }
             });
@@ -365,7 +405,7 @@ public class AggregateResultsMojo extends AbstractMojo {
     }
 
     private Path resolveAbsolutePath(String relativePath) {
-        return Paths.get(project.getBasedir().getAbsolutePath() + "/" + relativePath);
+        return ModuleNaming.resolve(project.getBasedir().getAbsolutePath(), relativePath);
     }
 
     private String projectCoordinates() {

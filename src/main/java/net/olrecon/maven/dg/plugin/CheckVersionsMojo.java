@@ -7,9 +7,9 @@ import net.olrecon.maven.dg.plugin.model.MavenDependencyTree;
 import net.olrecon.maven.dg.plugin.model.ParentVersionIssue;
 import net.olrecon.maven.dg.plugin.service.DependencyGraphAnalyzer;
 import net.olrecon.maven.dg.plugin.service.ParentChainBuilder;
+import net.olrecon.maven.dg.plugin.util.ModuleNaming;
 import net.olrecon.maven.dg.plugin.util.VersionComparator;
 import org.apache.maven.artifact.Artifact;
-import org.apache.maven.artifact.factory.ArtifactFactory;
 import org.apache.maven.artifact.repository.ArtifactRepository;
 import org.apache.maven.artifact.resolver.ArtifactResolver;
 import org.apache.maven.execution.MavenSession;
@@ -24,7 +24,6 @@ import org.apache.maven.project.MavenProject;
 import org.apache.maven.shared.dependency.graph.DependencyGraphBuilder;
 
 import java.io.File;
-import java.io.FileWriter;
 import java.io.Writer;
 import java.nio.file.Files;
 import java.nio.file.Paths;
@@ -57,9 +56,6 @@ public class CheckVersionsMojo extends AbstractMojo {
 
     @Component
     private ArtifactResolver artifactResolver;
-
-    @Component
-    private ArtifactFactory artifactFactory;
 
     @Component(hint = "default")
     private DependencyGraphBuilder dependencyGraphBuilder;
@@ -112,6 +108,9 @@ public class CheckVersionsMojo extends AbstractMojo {
     /** Absolute path to the temporary files directory (at the project root) */
     private String rootTempDir;
 
+    /** Artifacts whose POM could not be resolved or analyzed — their parent versions were NOT verified */
+    private final List<String> unverified = new ArrayList<>();
+
     @Override
     public void execute() throws MojoExecutionException, MojoFailureException {
         initComponents();
@@ -154,7 +153,6 @@ public class CheckVersionsMojo extends AbstractMojo {
 
         parentChainBuilder = new ParentChainBuilder(
                 artifactResolver,
-                artifactFactory,
                 localRepository,
                 remoteArtifactRepositories,
                 targetGroupIds,
@@ -167,7 +165,7 @@ public class CheckVersionsMojo extends AbstractMojo {
                 ? topProject.getBasedir().getAbsolutePath()
                 : project.getBasedir().getAbsolutePath();
 
-        rootTempDir = rootDir + "/" + tempDir;
+        rootTempDir = ModuleNaming.resolve(rootDir, tempDir).toString();
     }
 
     private void logStartInfo() {
@@ -182,6 +180,9 @@ public class CheckVersionsMojo extends AbstractMojo {
     /** Main module analysis method: builds the tree, collects errors, saves results. Returns all found issues. */
     private List<ParentVersionIssue> analyzeModule() throws Exception {
         String moduleName = project.getArtifactId();
+
+        clearModuleResults();
+        unverified.clear();
 
         DependencyGraphAnalyzer analyzer = createAnalyzer();
         MavenDependencyTree moduleTree = analyzer.buildDependencyTree(moduleName);
@@ -227,10 +228,17 @@ public class CheckVersionsMojo extends AbstractMojo {
                     issues.add(issue);
                 }
             } catch (Exception e) {
+                getLog().warn("Could not analyze " + artifact + ": " + e.getMessage());
+                unverified.add(artifact.toString());
                 if (debug) {
-                    getLog().debug("Error analyzing " + artifact + ": " + e.getMessage());
+                    getLog().debug(e);
                 }
             }
+        }
+
+        if (!unverified.isEmpty()) {
+            getLog().warn(unverified.size() + " artifact(s) could not be verified (POM not resolved or analysis failed)"
+                    + (debug ? ": " + unverified : "; run with -Ddebug=true to list them"));
         }
 
         return issues;
@@ -245,6 +253,10 @@ public class CheckVersionsMojo extends AbstractMojo {
                                                 DependencyGraphAnalyzer analyzer) throws Exception {
         ParentChainBuilder.ParentChain chain = parentChainBuilder.buildParentChain(artifact);
 
+        if (!chain.isPomResolved()) {
+            unverified.add(artifact.toString());
+        }
+
         if (!chain.isHasTargetGroup()) {
             return null;
         }
@@ -254,7 +266,8 @@ public class CheckVersionsMojo extends AbstractMojo {
         ParentVersionIssue issue = new ParentVersionIssue(moduleName);
         issue.setLibrary(chain.getGroupId(), chain.getArtifactId(), chain.getVersion());
         issue.setDependency(chain.getGroupId(), chain.getArtifactId(), chain.getVersion());
-        issue.setParentVersion(chain.getTargetParentVersion());
+        issue.setParent(chain.getTargetParentGroupId(), chain.getTargetParentArtifactId(),
+                chain.getTargetParentVersion());
         issue.setMinExpectedVersion(minVersion);
         issue.setError(isLowVersion);
         issue.setParentChain(chain.getParents());
@@ -270,7 +283,8 @@ public class CheckVersionsMojo extends AbstractMojo {
                                    Artifact artifact,
                                    DependencyGraphAnalyzer analyzer) {
         Map<String, List<DependencySource>> sources = analyzer.getDependencySources();
-        List<DependencySource> artifactSources = sources.get(artifact.getArtifactId());
+        List<DependencySource> artifactSources = sources.get(
+                artifact.getGroupId() + ":" + artifact.getArtifactId() + ":" + artifact.getVersion());
         if (artifactSources != null && !artifactSources.isEmpty()) {
             issue.setSource(artifactSources.get(0));
         }
@@ -319,13 +333,27 @@ public class CheckVersionsMojo extends AbstractMojo {
         saveErrorsFile(moduleName, issues);
     }
 
+    /** File id of the current module (groupId.artifactId) used in result file names */
+    private String fileId() {
+        return ModuleNaming.fileId(project.getGroupId(), project.getArtifactId());
+    }
+
+    /**
+     * Removes this module's result files from previous runs, so stale data
+     * is never picked up by the aggregation (even if this run fails midway).
+     */
+    private void clearModuleResults() throws Exception {
+        Files.deleteIfExists(Paths.get(rootTempDir, fileId() + ModuleNaming.TREE_SUFFIX));
+        Files.deleteIfExists(Paths.get(rootTempDir, fileId() + ModuleNaming.ERRORS_SUFFIX));
+    }
+
     /** Saves the module dependency tree */
     private void saveTreeFile(String moduleName, MavenDependencyTree moduleTree) throws Exception {
         if (moduleTree == null) {
             return;
         }
-        File treeFile = new File(rootTempDir, moduleName + "-tree.json");
-        try (Writer writer = new FileWriter(treeFile)) {
+        File treeFile = new File(rootTempDir, fileId() + ModuleNaming.TREE_SUFFIX);
+        try (Writer writer = Files.newBufferedWriter(treeFile.toPath(), java.nio.charset.StandardCharsets.UTF_8)) {
             gson.toJson(moduleTree, writer);
         }
         getLog().debug("Tree saved: " + treeFile.getAbsolutePath());
@@ -341,12 +369,12 @@ public class CheckVersionsMojo extends AbstractMojo {
             return;
         }
 
-        File errorFile = new File(rootTempDir, moduleName + "-errors.json");
+        File errorFile = new File(rootTempDir, fileId() + ModuleNaming.ERRORS_SUFFIX);
         Map<String, Object> errorData = new LinkedHashMap<>();
         errorData.put("module", moduleName);
         errorData.put("errors", errors);
 
-        try (Writer writer = new FileWriter(errorFile)) {
+        try (Writer writer = Files.newBufferedWriter(errorFile.toPath(), java.nio.charset.StandardCharsets.UTF_8)) {
             gson.toJson(errorData, writer);
         }
         getLog().info("Saved " + errors.size() + " errors for aggregation");
@@ -367,7 +395,8 @@ public class CheckVersionsMojo extends AbstractMojo {
                     .filter(ParentVersionIssue::isError)
                     .forEach(issue -> getLog().warn(
                             "  - " + issue.getLibraryArtifactId() + ":" + issue.getLibraryVersion()
-                                    + " uses " + targetGroupIds + ":" + issue.getParentVersion()
+                                    + " uses " + issue.getParentGroupId() + ":" + issue.getParentArtifactId()
+                                    + ":" + issue.getParentVersion()
                     ));
         }
     }

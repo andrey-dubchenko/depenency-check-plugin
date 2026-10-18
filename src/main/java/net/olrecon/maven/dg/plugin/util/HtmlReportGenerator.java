@@ -5,6 +5,7 @@ import net.olrecon.maven.dg.plugin.model.ParentVersionIssue;
 
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * Generator for the HTML report of parent POM version check results.
@@ -98,7 +99,7 @@ public class HtmlReportGenerator {
                 + "  </div>\n"
                 + "  <div class=\"stat-card\">\n"
                 + "    <div class=\"stat-label\">Target Group(s)</div>\n"
-                + "    <div class=\"stat-value stat-value-sm\">" + esc(String.join("<br>", targetGroupIds)) + "</div>\n"
+                + "    <div class=\"stat-value stat-value-sm\">" + targetGroupIds.stream().map(HtmlReportGenerator::esc).collect(Collectors.joining("<br>")) + "</div>\n"
                 + "  </div>\n"
                 + "  <div class=\"stat-card\">\n"
                 + "    <div class=\"stat-label\">Min Version</div>\n"
@@ -200,15 +201,12 @@ public class HtmlReportGenerator {
                 + "<a href=\"https://github.com/andrey-dubchenko/depenency-check-plugin\" target=\"_blank\">GitHub</a>\n"
                 + "</footer>\n"
                 + "</div>\n"
-                + "<script>\n"
-                + js()
-                + "</script>\n"
                 + "</body>\n"
                 + "</html>\n";
     }
 
     // -------------------------------------------------------------------------
-    // CSS and JS
+    // CSS
     // -------------------------------------------------------------------------
 
     private String css() {
@@ -278,15 +276,6 @@ public class HtmlReportGenerator {
                 // footer styles
                 + ".page-footer { margin-top: 28px; text-align: center; color: #9ca3af; font-size: 12px; padding: 12px; }\n"
                 + ".page-footer a { color: #6b7280; }\n";
-    }
-
-    private String js() {
-        // Small JS snippet: "Expand All / Collapse All" button (optional UX)
-        return "document.querySelectorAll('details.module-block').forEach(function(d) {\n"
-                + "  d.querySelector('summary').addEventListener('click', function() {\n"
-                + "    // native toggle is handled by browser\n"
-                + "  });\n"
-                + "});\n";
     }
 
     // -------------------------------------------------------------------------

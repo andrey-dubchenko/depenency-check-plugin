@@ -5,8 +5,8 @@ import com.google.gson.GsonBuilder;
 import net.olrecon.maven.dg.plugin.model.MavenDependencyTree;
 import net.olrecon.maven.dg.plugin.model.ParentVersionInfo;
 import net.olrecon.maven.dg.plugin.service.ParentChainBuilder;
+import net.olrecon.maven.dg.plugin.util.ModuleNaming;
 import org.apache.maven.artifact.Artifact;
-import org.apache.maven.artifact.factory.ArtifactFactory;
 import org.apache.maven.artifact.repository.ArtifactRepository;
 import org.apache.maven.artifact.resolver.ArtifactResolver;
 import org.apache.maven.execution.MavenSession;
@@ -24,7 +24,6 @@ import org.apache.maven.shared.dependency.graph.DependencyGraphBuilder;
 import org.apache.maven.shared.dependency.graph.DependencyGraphBuilderException;
 import org.apache.maven.shared.dependency.graph.DependencyNode;
 
-import java.io.FileWriter;
 import java.io.IOException;
 import java.io.Writer;
 import java.nio.file.Files;
@@ -66,9 +65,6 @@ public class DependencyTreeJsonMojo extends AbstractMojo {
 
     @Component
     private ArtifactResolver artifactResolver;
-
-    @Component
-    private ArtifactFactory artifactFactory;
 
     @Parameter(defaultValue = "${localRepository}", required = true, readonly = true)
     private ArtifactRepository localRepository;
@@ -142,7 +138,6 @@ public class DependencyTreeJsonMojo extends AbstractMojo {
         // targetGroupIds = empty: tree is built without version checking
         return new ParentChainBuilder(
                 artifactResolver,
-                artifactFactory,
                 localRepository,
                 remoteArtifactRepositories,
                 new ArrayList<>(),
@@ -370,7 +365,7 @@ public class DependencyTreeJsonMojo extends AbstractMojo {
 
     /** Saves the final JSON file containing the trees for all modules */
     private void writeResult(String rootDir, List<MavenDependencyTree> modules) throws IOException {
-        Path outputPath = Paths.get(rootDir + "/" + outputFile);
+        Path outputPath = ModuleNaming.resolve(rootDir, outputFile);
         Files.createDirectories(outputPath.getParent());
 
         Map<String, Object> result = buildOutputResult(modules);
@@ -380,7 +375,7 @@ public class DependencyTreeJsonMojo extends AbstractMojo {
                 .disableHtmlEscaping()
                 .create();
 
-        try (Writer writer = new FileWriter(outputPath.toFile())) {
+        try (Writer writer = Files.newBufferedWriter(outputPath, java.nio.charset.StandardCharsets.UTF_8)) {
             writer.write(gson.toJson(result));
         }
 

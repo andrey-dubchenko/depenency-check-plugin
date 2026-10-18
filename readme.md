@@ -46,21 +46,35 @@ In large Maven projects, transitive dependencies may pull in libraries that inhe
     <plugin>
       <groupId>net.olrecon</groupId>
       <artifactId>dependency-check-plugin</artifactId>
-      <version>2.2.1</version>
+      <version>2.3.0</version>
+      <!-- Plugin-level configuration: shared by check-versions AND the explicitly invoked aggregate goal -->
+      <configuration>
+        <targetGroupId>org.springframework.boot</targetGroupId>
+        <minVersion>3.2.0</minVersion>
+      </configuration>
       <executions>
         <execution>
           <id>check-versions</id>
           <goals><goal>check-versions</goal></goals>
-          <configuration>
-            <targetGroupId>org.springframework.boot</targetGroupId>
-            <minVersion>3.2.0</minVersion>
-          </configuration>
         </execution>
       </executions>
     </plugin>
   </plugins>
 </build>
 ```
+
+> **Put `targetGroupId` and `minVersion` in the plugin-level `<configuration>`, not inside `<execution>`.**
+>
+> Configuration placed inside an `<execution>` applies **only to that execution**. The `aggregate` goal is
+> invoked from the command line (`dependency-check:aggregate`), so it never sees execution-level settings
+> and falls back to the defaults (`org.springframework`, `1.0.0`). The result: the report and
+> `check-error.json` show the wrong target groups and minimum version.
+>
+> Alternatively, pass the same values on the command line, which applies to every goal in the invocation:
+> `mvn verify dependency-check:aggregate -DtargetGroupId=org.springframework.boot -DminVersion=3.2.0`.
+>
+> Settings used only by `check-versions` (`includeGroups`, `excludeGroups`) may stay in the execution.
+> `tempDir` must be identical for both goals, so keep it at plugin level (or leave the default).
 
 ### Step 2 — run with explicit `aggregate`
 
@@ -91,10 +105,13 @@ Output files in the root project's `target/`:
 
 ## Multiple Target Groups
 
-To check against several parent group IDs, provide a comma-separated list:
+To check against several parent group IDs, provide a comma-separated list in the plugin-level `<configuration>` (see [Quick Start](#step-1--configure-check-versions-in-the-root-pomxml)):
 
 ```xml
-<targetGroupId>org.springframework.boot,org.springframework</targetGroupId>
+<configuration>
+  <targetGroupId>org.springframework.boot,org.springframework</targetGroupId>
+  <minVersion>3.2.0</minVersion>
+</configuration>
 ```
 
 or via command line:
@@ -103,7 +120,7 @@ or via command line:
 mvn verify dependency-check:aggregate -DtargetGroupId=org.springframework.boot,org.springframework -DminVersion=3.2.0
 ```
 
-A dependency is flagged when **any** of the listed groups appears in its parent chain with a version below `minVersion`.
+A dependency is flagged when a parent from **any** of the listed groups appears in its parent chain with a version below `minVersion`. Group IDs are matched exactly, and the chain is walked up to the top: the **topmost** parent from a target group is the one whose version is checked.
 
 ---
 
@@ -145,11 +162,11 @@ Runs **per-module** during the `package` phase. Builds the dependency graph, tra
 
 | Parameter | Property | Default | Description |
 |-----------|----------|---------|-------------|
-| `targetGroupId` | `targetGroupId` | `org.springframework` | Target parent group(s), comma-separated |
-| `minVersion` | `minVersion` | `1.0.0` | Minimum acceptable parent version |
+| `targetGroupId` | `targetGroupId` | `org.springframework` | Target parent group(s), comma-separated. Matched **exactly** against the parent's groupId (no prefix matching); the whole parent chain is walked and the **topmost** matching parent is checked |
+| `minVersion` | `minVersion` | `1.0.0` | Minimum acceptable parent version. Compared with Maven version ordering; a `-SNAPSHOT` suffix is ignored, while `-RC1`/`-M1` count as lower than the release. Unresolved `${...}` versions are never reported |
 | `includeGroups` | `includeGroups` | _(all)_ | Comma-separated groupId prefixes to include |
 | `excludeGroups` | `excludeGroups` | _(none)_ | Comma-separated groupId prefixes to exclude |
-| `tempDir` | `tempDir` | `target/dependency-governance-temp` | Directory for per-module result files |
+| `tempDir` | `tempDir` | `target/dependency-governance-temp` | Directory for per-module result files (relative to the root project, or absolute). Files are named `<groupId>.<artifactId>-tree.json` / `-errors.json` and the module's previous files are removed at the start of each run |
 | `failOnError` | `failOnError` | `false` | Fail the build immediately if violations are found in this module |
 | `debug` | `debug` | `false` | Enable verbose debug logging |
 
@@ -165,12 +182,12 @@ mvn verify dependency-check:aggregate
 
 | Parameter | Property | Default | Description |
 |-----------|----------|---------|-------------|
-| `targetGroupId` | `targetGroupId` | `org.springframework` | Target group(s), comma-separated |
-| `minVersion` | `minVersion` | `1.0.0` | Minimum acceptable parent version |
+| `targetGroupId` | `targetGroupId` | `org.springframework` | Target group(s), comma-separated. Used for the report and JSON headers only — **must match** the value used by `check-versions` |
+| `minVersion` | `minVersion` | `1.0.0` | Minimum acceptable parent version. Used for the report and JSON headers only — **must match** the value used by `check-versions` |
 | `errorFile` | `errorFile` | `target/check-error.json` | Output path for aggregated errors JSON |
 | `treeFile` | `treeFile` | `target/deps-tree-root.json` | Output path for aggregated dependency tree JSON |
 | `reportFile` | `reportFile` | `target/dependency-report.html` | Output path for the HTML report |
-| `tempDir` | `tempDir` | `target/dependency-governance-temp` | Directory with per-module result files |
+| `tempDir` | `tempDir` | `target/dependency-governance-temp` | Directory with per-module result files (relative to the root project, or absolute); must match `check-versions`. Files of modules that are not part of the current reactor are ignored |
 | `failOnError` | `failOnError` | `false` | Fail the build if any violations are found |
 | `skipReport` | `skipReport` | `false` | Skip HTML report generation |
 | `debug` | `debug` | `false` | Enable verbose debug logging |
@@ -237,9 +254,14 @@ The HTML report is generated automatically by the `aggregate` goal. It is a full
         "library_group_id": "com.example",
         "library_artifact_id": "some-lib",
         "library_version": "1.5.0",
+        "source_library": "some-starter",
+        "source_version": "1.5.0",
+        "parent_group_id": "org.springframework.boot",
+        "parent_artifact_id": "spring-boot-starter-parent",
         "parent_version": "2.7.18",
         "minimum_expected_version": "3.2.0",
         "is_error": true,
+        "full_path": ["com.example:some-starter:1.5.0", "com.example:some-lib:1.5.0"],
         "parent_chain": [
           {
             "group_id": "org.springframework.boot",

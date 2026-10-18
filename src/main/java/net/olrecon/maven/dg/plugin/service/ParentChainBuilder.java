@@ -3,7 +3,8 @@ package net.olrecon.maven.dg.plugin.service;
 import lombok.Getter;
 import net.olrecon.maven.dg.plugin.model.ParentInfo;
 import org.apache.maven.artifact.Artifact;
-import org.apache.maven.artifact.factory.ArtifactFactory;
+import org.apache.maven.artifact.DefaultArtifact;
+import org.apache.maven.artifact.handler.DefaultArtifactHandler;
 import org.apache.maven.artifact.repository.ArtifactRepository;
 import org.apache.maven.artifact.resolver.ArtifactResolutionRequest;
 import org.apache.maven.artifact.resolver.ArtifactResolutionResult;
@@ -16,7 +17,6 @@ import org.apache.maven.plugin.logging.Log;
 import org.apache.maven.project.MavenProject;
 
 import java.io.File;
-import java.io.FileReader;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -31,7 +31,6 @@ import java.util.Set;
 public class ParentChainBuilder {
 
     private final ArtifactResolver artifactResolver;
-    private final ArtifactFactory artifactFactory;
     private final ArtifactRepository localRepository;
     private final List remoteRepositories;
 
@@ -52,14 +51,12 @@ public class ParentChainBuilder {
     private final Log log;
 
     public ParentChainBuilder(ArtifactResolver artifactResolver,
-                              ArtifactFactory artifactFactory,
                               ArtifactRepository localRepository,
                               List remoteRepositories,
                               List<String> targetGroupIds,
                               MavenSession session,
                               Log log) {
         this.artifactResolver = artifactResolver;
-        this.artifactFactory = artifactFactory;
         this.localRepository = localRepository;
         this.remoteRepositories = remoteRepositories;
         this.targetGroupIds = targetGroupIds != null ? targetGroupIds : new ArrayList<>();
@@ -81,6 +78,7 @@ public class ParentChainBuilder {
 
         File pomFile = resolvePomFile(artifact);
         if (pomFile != null && pomFile.exists()) {
+            chain.pomResolved = true;
             traverseParentChain(pomFile, chain, new HashSet<>());
         }
 
@@ -91,30 +89,38 @@ public class ParentChainBuilder {
      * Determines the POM file for an artifact.
      * Priority: reactor project (flatten-plugin support) → local/remote repository.
      */
-    private File resolvePomFile(Artifact artifact) throws Exception {
-        // Check whether the artifact is part of the current build (reactor)
-        File reactorPom = findReactorProjectPom(artifact);
-        if (reactorPom != null) {
-            log.debug("Using reactor POM for: " + artifactKey(artifact));
-            return reactorPom;
-        }
-
-        // Resolve POM from the repository
-        return resolveFromRepository(artifact);
+    private File resolvePomFile(Artifact artifact) {
+        return resolvePomFile(artifact.getGroupId(), artifact.getArtifactId(), artifact.getVersion());
     }
 
     /**
-     * Looks for the artifact's POM file among the projects of the current reactor.
+     * Determines the POM file for the given coordinates.
+     * Priority: reactor project (flatten-plugin support) → local/remote repository.
+     * Returns null if the POM cannot be found.
+     */
+    private File resolvePomFile(String groupId, String artifactId, String version) {
+        File reactorPom = findReactorProjectPom(groupId, artifactId, version);
+        if (reactorPom != null) {
+            log.debug("Using reactor POM for: " + groupId + ":" + artifactId + ":" + version);
+            return reactorPom;
+        }
+        return resolveFromRepository(groupId, artifactId, version);
+    }
+
+    /**
+     * Looks for the POM file among the projects of the current reactor.
      * This is necessary when using maven-flatten-plugin: sibling modules
      * may not yet be installed in the local repository
      * but are already accessible via the Maven session.
      */
-    private File findReactorProjectPom(Artifact artifact) {
+    private File findReactorProjectPom(String groupId, String artifactId, String version) {
         if (session == null) {
             return null;
         }
         for (MavenProject reactorProject : session.getAllProjects()) {
-            if (isMatchingProject(reactorProject, artifact)) {
+            if (groupId.equals(reactorProject.getGroupId())
+                    && artifactId.equals(reactorProject.getArtifactId())
+                    && version.equals(reactorProject.getVersion())) {
                 File pomFile = reactorProject.getFile();
                 if (pomFile != null && pomFile.exists()) {
                     return pomFile;
@@ -124,25 +130,10 @@ public class ParentChainBuilder {
         return null;
     }
 
-    /** Checks whether a reactor project matches the given artifact */
-    private boolean isMatchingProject(MavenProject project, Artifact artifact) {
-        return project.getGroupId().equals(artifact.getGroupId())
-                && project.getArtifactId().equals(artifact.getArtifactId())
-                && project.getVersion().equals(artifact.getVersion());
-    }
-
-    /**
-     * Resolves the artifact's POM file from the Maven repository.
-     * Returns null if resolution fails.
-     */
-    private File resolveFromRepository(Artifact artifact) {
-        Artifact pomArtifact = artifactFactory.createArtifact(
-                artifact.getGroupId(),
-                artifact.getArtifactId(),
-                artifact.getVersion(),
-                null,
-                "pom"
-        );
+    /** Resolves the POM file from the Maven repository. Returns null if resolution fails. */
+    private File resolveFromRepository(String groupId, String artifactId, String version) {
+        Artifact pomArtifact = new DefaultArtifact(groupId, artifactId, version, null, "pom", null,
+                new DefaultArtifactHandler("pom"));
 
         ArtifactResolutionRequest request = new ArtifactResolutionRequest();
         request.setArtifact(pomArtifact);
@@ -150,12 +141,11 @@ public class ParentChainBuilder {
         request.setRemoteRepositories(remoteRepositories);
 
         ArtifactResolutionResult result = artifactResolver.resolve(request);
-
         if (result.isSuccess()) {
             return pomArtifact.getFile();
         }
 
-        log.debug("Could not resolve POM from repository: " + artifactKey(artifact));
+        log.debug("Could not resolve POM from repository: " + groupId + ":" + artifactId + ":" + version);
         return null;
     }
 
@@ -187,8 +177,8 @@ public class ParentChainBuilder {
 
     /** Reads the POM model from a file */
     private Model readPomModel(File pomFile) {
-        try (FileReader reader = new FileReader(pomFile)) {
-            return new MavenXpp3Reader().read(reader);
+        try (java.io.InputStream in = java.nio.file.Files.newInputStream(pomFile.toPath())) {
+            return new MavenXpp3Reader().read(in);
         } catch (Exception e) {
             log.debug("Failed to read POM file " + pomFile + ": " + e.getMessage());
             return null;
@@ -200,42 +190,7 @@ public class ParentChainBuilder {
      * First checks the reactor (flatten-plugin support), then falls back to the repository.
      */
     private File resolveParentPomFile(Parent parent) {
-        // Look for the parent in the reactor
-        if (session != null) {
-            for (MavenProject reactorProject : session.getAllProjects()) {
-                if (reactorProject.getGroupId().equals(parent.getGroupId())
-                        && reactorProject.getArtifactId().equals(parent.getArtifactId())
-                        && reactorProject.getVersion().equals(parent.getVersion())) {
-                    File pomFile = reactorProject.getFile();
-                    if (pomFile != null && pomFile.exists()) {
-                        log.debug("Parent found in reactor: " + parentKey(parent));
-                        return pomFile;
-                    }
-                }
-            }
-        }
-
-        // Resolve the parent from the repository
-        Artifact parentArtifact = artifactFactory.createArtifact(
-                parent.getGroupId(),
-                parent.getArtifactId(),
-                parent.getVersion(),
-                null,
-                "pom"
-        );
-
-        ArtifactResolutionRequest request = new ArtifactResolutionRequest();
-        request.setArtifact(parentArtifact);
-        request.setLocalRepository(localRepository);
-        request.setRemoteRepositories(remoteRepositories);
-
-        ArtifactResolutionResult result = artifactResolver.resolve(request);
-        if (result.isSuccess()) {
-            return parentArtifact.getFile();
-        }
-
-        log.debug("Could not resolve parent POM: " + parentKey(parent));
-        return null;
+        return resolvePomFile(parent.getGroupId(), parent.getArtifactId(), parent.getVersion());
     }
 
     private String artifactKey(Artifact artifact) {
@@ -264,11 +219,20 @@ public class ParentChainBuilder {
         /** List of found parent POMs */
         private final List<ParentInfo> parents = new ArrayList<>();
 
+        /** Whether the artifact's own POM was found (false means the chain could not be verified) */
+        private boolean pomResolved = false;
+
         /** Whether the target group was found in the parent chain */
         private boolean hasTargetGroup = false;
 
-        /** Version of the parent from the target group (if found) */
+        /** Version of the topmost (last found) parent from the target group (if found) */
         private String targetParentVersion = null;
+
+        /** GroupId of the topmost (last found) parent from the target group (if found) */
+        private String targetParentGroupId = null;
+
+        /** ArtifactId of the topmost (last found) parent from the target group (if found) */
+        private String targetParentArtifactId = null;
 
         ParentChain(String groupId, String artifactId, String version) {
             this.groupId = groupId;
@@ -278,15 +242,18 @@ public class ParentChainBuilder {
 
         /**
          * Adds a parent POM to the chain.
-         * If groupId is in targetGroupIds, the version is recorded for subsequent checking.
+         * If groupId is in targetGroupIds, it overwrites any previously recorded target parent,
+         * so the topmost such parent in the chain (its groupId, artifactId and version) is the one checked.
          *
          * @param targetGroupIds target groups for version checking; empty list disables checking
          */
         void addParent(String groupId, String artifactId, String version, List<String> targetGroupIds) {
             parents.add(new ParentInfo(groupId, artifactId, version));
 
-            if (targetGroupIds != null && !targetGroupIds.isEmpty() && targetGroupIds.contains(groupId)) {
+            if (targetGroupIds != null && targetGroupIds.contains(groupId)) {
                 this.hasTargetGroup = true;
+                this.targetParentGroupId = groupId;
+                this.targetParentArtifactId = artifactId;
                 this.targetParentVersion = version;
             }
         }
